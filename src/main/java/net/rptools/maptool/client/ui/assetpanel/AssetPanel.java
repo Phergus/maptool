@@ -69,6 +69,16 @@ public class AssetPanel extends JComponent {
   private Timer updateFilterTimer;
   private JProgressBar imagePanelProgressBar;
 
+  public boolean isLimitReached() {
+    return limitReached;
+  }
+
+  public void setLimitReached(boolean limitReached) {
+    this.limitReached = limitReached;
+  }
+
+  private boolean limitReached = false;
+
   public AssetPanel(String controlName) {
     this(controlName, new AssetPanelModel());
   }
@@ -125,8 +135,9 @@ public class AssetPanel extends JComponent {
 
     imagePanel.addMouseWheelListener(
         new MouseWheelListener() {
+          @Override
           public void mouseWheelMoved(MouseWheelEvent e) {
-            if (SwingUtil.isControlDown(e) || e.isMetaDown()) {
+            if (SwingUtil.isControlDown(e) || e.isMetaDown()) { // XXX Why either one?
               e.consume();
               int steps = e.getWheelRotation();
               imagePanel.setGridSize(imagePanel.getGridSize() + steps);
@@ -214,14 +225,17 @@ public class AssetPanel extends JComponent {
           .getDocument()
           .addDocumentListener(
               new DocumentListener() {
+                @Override
                 public void changedUpdate(DocumentEvent e) {
                   // no op
                 }
 
+                @Override
                 public void insertUpdate(DocumentEvent e) {
                   updateFilter();
                 }
 
+                @Override
                 public void removeUpdate(DocumentEvent e) {
                   updateFilter();
                 }
@@ -242,6 +256,7 @@ public class AssetPanel extends JComponent {
           new JCheckBox(I18N.getText("panel.Asset.ImageModel.checkbox.searchSubDir1"), false);
       globalSearchField.addActionListener(
           new ActionListener() {
+            @Override
             public void actionPerformed(ActionEvent ev) {
               updateFilter();
             }
@@ -287,6 +302,7 @@ public class AssetPanel extends JComponent {
 
       thumbnailPreviewSlider.setUI(
           new MetalSliderUI() {
+            @Override
             protected void scrollDueToClickInTrack(int direction) {
               int value = thumbnailPreviewSlider.getValue();
 
@@ -327,6 +343,7 @@ public class AssetPanel extends JComponent {
           new Timer(
               500,
               new ActionListener() {
+                @Override
                 public void actionPerformed(ActionEvent e) {
                   ImageFileImagePanelModel model = (ImageFileImagePanelModel) imagePanel.getModel();
                   if (model == null) {
@@ -383,7 +400,7 @@ public class AssetPanel extends JComponent {
 
   public void setDirectory(Directory dir) {
     imagePanel.setModel(
-        new ImageFileImagePanelModel(dir) {
+        new ImageFileImagePanelModel(dir, this) {
           @Override
           public Transferable getTransferable(int index) {
             // TransferableAsset t = (TransferableAsset) super.getTransferable(index);

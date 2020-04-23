@@ -41,6 +41,7 @@ import net.rptools.maptool.model.Pointer;
 import net.rptools.maptool.model.TextMessage;
 import net.rptools.maptool.model.Token;
 import net.rptools.maptool.model.Zone;
+import net.rptools.maptool.model.Zone.TopologyMode;
 import net.rptools.maptool.model.Zone.VisionType;
 import net.rptools.maptool.model.ZonePoint;
 import net.rptools.maptool.model.drawing.Drawable;
@@ -126,7 +127,11 @@ public class ServerMethodHandler extends AbstractMethodHandler implements Server
           message((TextMessage) context.get(0));
           break;
         case execFunction:
-          execFunction((String) context.get(0), (String) context.get(1), (String) context.get(2));
+          execFunction(
+              (String) context.get(0),
+              (String) context.get(1),
+              (String) context.get(2),
+              (List<Object>) context.get(3));
           break;
         case execLink:
           execLink((String) context.get(0), (String) context.get(1), (String) context.get(2));
@@ -217,10 +222,10 @@ public class ServerMethodHandler extends AbstractMethodHandler implements Server
           setServerPolicy((ServerPolicy) context.get(0));
           break;
         case addTopology:
-          addTopology(context.getGUID(0), (Area) context.get(1));
+          addTopology(context.getGUID(0), (Area) context.get(1), (TopologyMode) context.get(2));
           break;
         case removeTopology:
-          removeTopology(context.getGUID(0), (Area) context.get(1));
+          removeTopology(context.getGUID(0), (Area) context.get(1), (TopologyMode) context.get(2));
           break;
         case renameZone:
           renameZone(context.getGUID(0), context.getString(1));
@@ -552,7 +557,7 @@ public class ServerMethodHandler extends AbstractMethodHandler implements Server
   }
 
   @Override
-  public void execFunction(String functionText, String target, String source) {
+  public void execFunction(String target, String source, String functionName, List<Object> args) {
     forwardToClients();
   }
 
@@ -771,17 +776,18 @@ public class ServerMethodHandler extends AbstractMethodHandler implements Server
 
   public void setServerPolicy(ServerPolicy policy) {
     forwardToClients();
+    MapTool.getFrame().getToolbox().updateTools();
   }
 
-  public void addTopology(GUID zoneGUID, Area area) {
+  public void addTopology(GUID zoneGUID, Area area, TopologyMode topologyMode) {
     Zone zone = server.getCampaign().getZone(zoneGUID);
-    zone.addTopology(area);
+    zone.addTopology(area, topologyMode);
     forwardToClients();
   }
 
-  public void removeTopology(GUID zoneGUID, Area area) {
+  public void removeTopology(GUID zoneGUID, Area area, TopologyMode topologyMode) {
     Zone zone = server.getCampaign().getZone(zoneGUID);
-    zone.removeTopology(area);
+    zone.removeTopology(area, topologyMode);
     forwardToClients();
   }
 

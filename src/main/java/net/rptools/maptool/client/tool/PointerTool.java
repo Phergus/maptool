@@ -262,9 +262,22 @@ public class PointerTool extends DefaultTool implements ZoneOverlay {
   public void exposeFoW(ZonePoint p) {
     // if has fog(required)
     // and ((isGM with pref set) OR serverPolicy allows auto reveal by players)
-    if (renderer.getZone().hasFog()
-        && ((AppPreferences.getAutoRevealVisionOnGMMovement() && MapTool.getPlayer().isGM())
-            || MapTool.getServerPolicy().isAutoRevealOnMovement())) {
+
+    String name = MapTool.getPlayer().getName();
+    boolean isGM = MapTool.getPlayer().isGM();
+    boolean ownerReveal; // if true, reveal FoW if current player owns the token.
+    boolean hasOwnerReveal; // if true, reveal FoW if token has an owner.
+    boolean noOwnerReveal; // if true, reveal FoW if token has no owners.
+
+    if (MapTool.isPersonalServer()) {
+      ownerReveal =
+          hasOwnerReveal = noOwnerReveal = AppPreferences.getAutoRevealVisionOnGMMovement();
+    } else {
+      ownerReveal = MapTool.getServerPolicy().isAutoRevealOnMovement();
+      hasOwnerReveal = isGM && MapTool.getServerPolicy().isAutoRevealOnMovement();
+      noOwnerReveal = isGM && MapTool.getServerPolicy().getGmRevealsVisionForUnownedTokens();
+    }
+    if (renderer.getZone().hasFog() && (ownerReveal || hasOwnerReveal || noOwnerReveal)) {
       Set<GUID> exposeSet = new HashSet<GUID>();
       Zone zone = renderer.getZone();
       for (GUID tokenGUID : renderer.getOwnedTokens(renderer.getSelectedTokenSet())) {
@@ -272,18 +285,9 @@ public class PointerTool extends DefaultTool implements ZoneOverlay {
         if (token == null) {
           continue;
         }
-
-        // Old logic
-        // if (MapTool.getPlayer().isGM() || token.isOwner(MapTool.getPlayer().getName())) {
-        //  exposeSet.add(tokenGUID);
-        // }
-
-        // Jamz: New logic so GM only reveals FoW for unowned tokens if server option is enabled
-        if (token.isOwner(MapTool.getPlayer().getName())) exposeSet.add(tokenGUID);
-        else if (MapTool.getPlayer().isGM() && token.hasOwners()) exposeSet.add(tokenGUID);
-        else if (MapTool.getPlayer().isGM()
-            && MapTool.getServerPolicy().getGmRevealsVisionForUnownedTokens())
-          exposeSet.add(tokenGUID);
+        if (ownerReveal && token.isOwner(name)) exposeSet.add(tokenGUID);
+        else if (hasOwnerReveal && token.hasOwners()) exposeSet.add(tokenGUID);
+        else if (noOwnerReveal && !token.hasOwners()) exposeSet.add(tokenGUID);
       }
 
       if (p != null) {
@@ -331,6 +335,11 @@ public class PointerTool extends DefaultTool implements ZoneOverlay {
 
     public void handleMouseReleased(MouseEvent event) {}
 
+    /**
+     * Handles right click (popup menu) and double left click (token editor).
+     *
+     * @param event the mouse event.
+     */
     public void handleMousePressed(MouseEvent event) {
       if (event.getClickCount() == 2 && SwingUtilities.isLeftMouseButton(event)) {
         Token token = getTokenAt(event.getX(), event.getY());
@@ -370,6 +379,7 @@ public class PointerTool extends DefaultTool implements ZoneOverlay {
       }
       renderer.clearSelectedTokens();
       boolean selected = renderer.selectToken(token.getId());
+      renderer.updateAfterSelection();
 
       if (selected) {
         Tool tool = MapTool.getFrame().getToolbox().getSelectedTool();
@@ -479,6 +489,7 @@ public class PointerTool extends DefaultTool implements ZoneOverlay {
         // Stack
         renderer.clearSelectedTokens();
         showTokenStackPopup(tokenList, e.getX(), e.getY());
+        renderer.updateAfterSelection();
       } else {
         // Single
         Token token = renderer.getTokenAt(e.getX(), e.getY());
@@ -506,20 +517,20 @@ public class PointerTool extends DefaultTool implements ZoneOverlay {
       // Don't select if it's already being moved by someone
       isNewTokenSelected = false;
       if (!renderer.isTokenMoving(token)) {
-        if (!renderer.getSelectedTokenSet().contains(token.getId()) && !SwingUtil.isShiftDown(e)) {
+        if (SwingUtil.isShiftDown(e)) {
+          // if shift, we invert the selection of the token
+          if (renderer.getSelectedTokenSet().contains(token.getId())) {
+            renderer.deselectToken(token.getId());
+          } else {
+            renderer.selectToken(token.getId());
+          }
+          renderer.updateAfterSelection();
+        } else if (!renderer.getSelectedTokenSet().contains(token.getId())) {
+          // if not shift and click on non-selected token, switch selection to the token
           isNewTokenSelected = true;
           renderer.clearSelectedTokens();
-        }
-        // XXX Isn't Windows standard to use Ctrl-click to add one element and Shift-click
-        // to
-        // extend?
-        // XXX Similarly, OSX uses Cmd-click to add one element and Shift-click to extend...
-        // Change
-        // it later.
-        if (SwingUtil.isShiftDown(e) && renderer.getSelectedTokenSet().contains(token.getId())) {
-          renderer.deselectToken(token.getId());
-        } else {
           renderer.selectToken(token.getId());
+          renderer.updateAfterSelection();
         }
         // Dragging offset for currently selected token
         ZonePoint pos = new ScreenPoint(e.getX(), e.getY()).convertToZone(renderer);
@@ -566,6 +577,7 @@ public class PointerTool extends DefaultTool implements ZoneOverlay {
     // WAYPOINT
     if (SwingUtilities.isRightMouseButton(e) && isDraggingToken) {
       setWaypoint();
+      setDraggingMap(false); // We no longer drag the map. Fixes bug #616
       return;
     }
 
@@ -596,9 +608,9 @@ public class PointerTool extends DefaultTool implements ZoneOverlay {
             renderer.clearSelectedTokens();
           }
           renderer.selectTokens(selectionBoundBox);
+          renderer.updateAfterSelection();
 
           selectionBoundBox = null;
-          renderer.repaint();
           return;
         }
         // DRAG TOKEN COMPLETE
@@ -610,9 +622,12 @@ public class PointerTool extends DefaultTool implements ZoneOverlay {
           if (SwingUtilities.isLeftMouseButton(e) && !SwingUtil.isShiftDown(e)) {
             Token token = renderer.getTokenAt(e.getX(), e.getY());
             // Only if it isn't already being moved
-            if (token != null && !renderer.isTokenMoving(token)) {
+            if (token != null
+                && !renderer.isTokenMoving(token)
+                && !renderer.isOnlyTokenSelected(token)) {
               renderer.clearSelectedTokens();
               renderer.selectToken(token.getId());
+              renderer.updateAfterSelection();
             }
           }
         }
@@ -640,6 +655,7 @@ public class PointerTool extends DefaultTool implements ZoneOverlay {
           renderer.clearSelectedTokens();
         }
         renderer.selectToken(tokenUnderMouse.getId());
+        renderer.updateAfterSelection();
         isNewTokenSelected = false;
       }
       if (tokenUnderMouse != null && !renderer.getSelectedTokenSet().isEmpty()) {
@@ -828,9 +844,10 @@ public class PointerTool extends DefaultTool implements ZoneOverlay {
       if (!isDraggingToken && renderer.isTokenMoving(tokenUnderMouse)) {
         return;
       }
-      if (isNewTokenSelected) {
+      if (isNewTokenSelected && !renderer.isOnlyTokenSelected(tokenUnderMouse)) {
         renderer.clearSelectedTokens();
         renderer.selectToken(tokenUnderMouse.getId());
+        renderer.updateAfterSelection();
       }
       isNewTokenSelected = false;
 
@@ -1034,12 +1051,11 @@ public class PointerTool extends DefaultTool implements ZoneOverlay {
   }
 
   /**
-   * These keystrokes are currently hard-coded and should be exported to the i18n.properties file in
-   * a perfect universe. :)
-   *
-   * <p>
-   *
-   * <table summary="">
+   * @note These keystrokes are currently hard-coded and should be exported to a property file in a
+   *     perfect universe. :)
+   *     <p>
+   *     <table>
+   * <caption>Keystrokes</caption>
    * <tr>
    * <td>Meta R
    * <td>Select the FacingTool (to allow rotating with the left/right arrows)
@@ -1076,7 +1092,6 @@ public class PointerTool extends DefaultTool implements ZoneOverlay {
    * <tr>
    * <td>NumPad digits
    * <td>Move token (specifics based on the grid type are not implemented yet):<br>
-   * <table summary="">
    * <tr>
    * <td>7 (up/left)
    * <td>8 (up)
@@ -1089,7 +1104,6 @@ public class PointerTool extends DefaultTool implements ZoneOverlay {
    * <td>1 (down/left)
    * <td>2 (down)
    * <td>3 (down/right)
-   * </table>
    * <tr>
    * <td>Down
    * <td>Move token down
@@ -1369,10 +1383,7 @@ public class PointerTool extends DefaultTool implements ZoneOverlay {
         }
         facing = facingArray[facingIndex];
       }
-      token.setFacing(facing);
-
-      renderer.flush(token);
-      MapTool.serverCommand().putToken(renderer.getZone().getId(), token);
+      MapTool.serverCommand().updateTokenProperty(token, Token.Update.setFacing, facing);
     }
     renderer.repaint();
   }

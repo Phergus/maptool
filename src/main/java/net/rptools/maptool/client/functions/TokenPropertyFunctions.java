@@ -14,8 +14,11 @@
  */
 package net.rptools.maptool.client.functions;
 
-import java.awt.Image;
-import java.awt.Rectangle;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
+import java.awt.*;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -26,6 +29,7 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import net.rptools.maptool.client.MapTool;
+import net.rptools.maptool.client.functions.json.JSONMacroFunctions;
 import net.rptools.maptool.client.ui.zone.ZoneRenderer;
 import net.rptools.maptool.language.I18N;
 import net.rptools.maptool.model.Grid;
@@ -40,7 +44,6 @@ import net.rptools.maptool.util.TokenUtil;
 import net.rptools.parser.Parser;
 import net.rptools.parser.ParserException;
 import net.rptools.parser.function.AbstractFunction;
-import net.sf.json.JSONArray;
 
 public class TokenPropertyFunctions extends AbstractFunction {
   private static final TokenPropertyFunctions instance = new TokenPropertyFunctions();
@@ -99,6 +102,8 @@ public class TokenPropertyFunctions extends AbstractFunction {
         "setGMNotes",
         "getNotes",
         "setNotes",
+        "getTokenLayoutProps",
+        "setTokenLayoutProps",
         "setTokenSnapToGrid");
   }
 
@@ -640,10 +645,11 @@ public class TokenPropertyFunctions extends AbstractFunction {
         // Do nothing when trusted, since all ownership should be turned off for an empty string
         // used in such a macro.
       } else {
-        Object json = JSONMacroFunctions.asJSON(parameters.get(0));
-        if (json != null && json instanceof JSONArray) {
-          for (Object o : (JSONArray) json) {
-            MapTool.serverCommand().updateTokenProperty(token, Token.Update.addOwner, o.toString());
+        JsonElement json = JSONMacroFunctions.getInstance().asJsonElement(parameters.get(0));
+        if (json != null && json.isJsonArray()) {
+          for (JsonElement ele : json.getAsJsonArray()) {
+            MapTool.serverCommand()
+                .updateTokenProperty(token, Token.Update.addOwner, ele.getAsString());
           }
         } else {
           MapTool.serverCommand().updateTokenProperty(token, Token.Update.addOwner, s);
@@ -789,6 +795,61 @@ public class TokenPropertyFunctions extends AbstractFunction {
       MapTool.serverCommand().updateTokenProperty(token, Token.Update.setSnapToGrid, toGrid);
       return token.isSnapToGrid() ? BigDecimal.ONE : BigDecimal.ZERO;
     }
+
+    /*
+     * String/JsonObject = getTokenLayoutProps(String delim: ',', String tokenId: currentToken(), String mapName: current map)
+     */
+    if (functionName.equalsIgnoreCase("getTokenLayoutProps")) {
+      FunctionUtil.checkNumberParam(functionName, parameters, 0, 3);
+      String delim = parameters.size() > 0 ? parameters.get(0).toString() : ",";
+      Token token = FunctionUtil.getTokenFromParam(parser, functionName, parameters, 1, 2);
+
+      Double scale = token.getSizeScale();
+      int xOffset = token.getAnchorX();
+      int yOffset = token.getAnchorY();
+
+      if ("json".equals(delim)) {
+        JsonObject jarr = new JsonObject();
+        jarr.addProperty("scale", scale);
+        jarr.addProperty("xOffset", xOffset);
+        jarr.addProperty("yOffset", yOffset);
+        return jarr;
+      } else {
+        return "scale=" + scale + delim + "xOffset=" + xOffset + delim + "yOffset=" + yOffset;
+      }
+    }
+
+    /*
+     * setTokenLayoutProps(scale, xOffset, yOffset, token: currentToken(), mapName = current map)
+     */
+    if (functionName.equalsIgnoreCase("setTokenLayoutProps")) {
+      FunctionUtil.checkNumberParam(functionName, parameters, 3, 5);
+      Token token = FunctionUtil.getTokenFromParam(parser, functionName, parameters, 3, 4);
+
+      double scale;
+      if (!"".equals(parameters.get(0))) {
+        scale = FunctionUtil.paramAsDouble(functionName, parameters, 0, false);
+      } else {
+        scale = token.getSizeScale();
+      }
+      int xOffset;
+      if (!"".equals(parameters.get(1))) {
+        xOffset = FunctionUtil.paramAsInteger(functionName, parameters, 1, false);
+      } else {
+        xOffset = token.getAnchorX();
+      }
+      int yOffset;
+      if (!"".equals(parameters.get(2))) {
+        yOffset = FunctionUtil.paramAsInteger(functionName, parameters, 2, false);
+      } else {
+        yOffset = token.getAnchorY();
+      }
+
+      MapTool.serverCommand()
+          .updateTokenProperty(token, Token.Update.setLayout, scale, xOffset, yOffset);
+      return "";
+    }
+
     throw new ParserException(I18N.getText("macro.function.general.unknownFunction", functionName));
   }
 
@@ -966,7 +1027,9 @@ public class TokenPropertyFunctions extends AbstractFunction {
         }
       }
       if ("json".equals(delim)) {
-        return JSONArray.fromObject(namesList).toString();
+        JsonArray jarr = new JsonArray();
+        namesList.forEach(n -> jarr.add(n));
+        return jarr.toString();
       } else {
         return StringFunctions.getInstance().join(namesList, delim);
       }
@@ -983,9 +1046,11 @@ public class TokenPropertyFunctions extends AbstractFunction {
         namesList.add(tp.getName());
       }
       if ("json".equals(delim)) {
-        return JSONArray.fromObject(namesList).toString();
+        JsonArray jarr = new JsonArray();
+        namesList.forEach(n -> jarr.add(new JsonPrimitive(n)));
+        return jarr.toString();
       } else {
-        return StringFunctions.getInstance().join(namesList);
+        return StringFunctions.getInstance().join(namesList, delim);
       }
     }
   }
@@ -1017,7 +1082,9 @@ public class TokenPropertyFunctions extends AbstractFunction {
     String[] names = new String[namesList.size()];
     namesList.toArray(names);
     if ("json".equals(delim)) {
-      return JSONArray.fromObject(names).toString();
+      JsonArray jarr = new JsonArray();
+      Arrays.stream(names).forEach(n -> jarr.add(new JsonPrimitive(n)));
+      return jarr.toString();
     } else {
       return StringFunctions.getInstance().join(names, delim);
     }
@@ -1034,7 +1101,9 @@ public class TokenPropertyFunctions extends AbstractFunction {
     String[] owners = new String[token.getOwners().size()];
     token.getOwners().toArray(owners);
     if ("json".endsWith(delim)) {
-      return JSONArray.fromObject(owners).toString();
+      JsonArray jarr = new JsonArray();
+      Arrays.stream(owners).forEach(o -> jarr.add(new JsonPrimitive(o)));
+      return jarr.toString();
     } else {
       return StringFunctions.getInstance().join(owners, delim);
     }

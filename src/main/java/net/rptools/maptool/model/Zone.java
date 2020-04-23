@@ -31,6 +31,7 @@ import java.util.ListIterator;
 import java.util.Map;
 import java.util.Set;
 import net.rptools.lib.MD5Key;
+import net.rptools.maptool.client.AppPreferences;
 import net.rptools.maptool.client.AppUtil;
 import net.rptools.maptool.client.MapTool;
 import net.rptools.maptool.client.tool.drawing.UndoPerZone;
@@ -40,6 +41,7 @@ import net.rptools.maptool.client.ui.zone.ZoneRenderer;
 import net.rptools.maptool.client.ui.zone.ZoneView;
 import net.rptools.maptool.language.I18N;
 import net.rptools.maptool.model.InitiativeList.TokenInitiative;
+import net.rptools.maptool.model.Token.TerrainModifierOperation;
 import net.rptools.maptool.model.drawing.Drawable;
 import net.rptools.maptool.model.drawing.DrawableColorPaint;
 import net.rptools.maptool.model.drawing.DrawablePaint;
@@ -59,6 +61,7 @@ import org.apache.logging.log4j.Logger;
  * initialized for maximum compatibility.
  */
 public class Zone extends BaseModel {
+
   private static final Logger log = LogManager.getLogger(Zone.class);
 
   /** The vision type (OFF, DAY, NIGHT). */
@@ -124,6 +127,20 @@ public class Zone extends BaseModel {
     GM
   }
 
+  /** Control how A* Pathfinding distances is rounded off due to terrain costs */
+  public enum AStarRoundingOptions {
+    NONE,
+    CELL_UNIT,
+    INTEGER
+  }
+
+  // Control what topology layer(s) to add/get drawing to/from
+  public enum TopologyMode {
+    VBL,
+    MBL,
+    COMBINED
+  }
+
   public static final int DEFAULT_TOKEN_VISION_DISTANCE = 250; // In units
   public static final int DEFAULT_PIXELS_CELL = 50;
   public static final int DEFAULT_UNITS_PER_CELL = 5;
@@ -148,6 +165,8 @@ public class Zone extends BaseModel {
   private int tokenVisionDistance = DEFAULT_TOKEN_VISION_DISTANCE;
 
   private double unitsPerCell = DEFAULT_UNITS_PER_CELL;
+  private AStarRoundingOptions aStarRounding = AStarRoundingOptions.NONE;
+  private TopologyMode topologyMode = TopologyMode.VBL;
 
   private List<DrawnElement> drawables = new LinkedList<DrawnElement>();
   private List<DrawnElement> gmDrawables = new LinkedList<DrawnElement>();
@@ -174,6 +193,9 @@ public class Zone extends BaseModel {
 
   /** The VBL topology of the zone. Does not include token VBL. */
   private Area topology = new Area();
+
+  // New topology to hold Movement Blocking Only
+  private Area topologyTerrain = new Area();
 
   // The 'board' layer, at the very bottom of the layer stack.
   // Itself has two sub-layers:
@@ -372,7 +394,9 @@ public class Zone extends BaseModel {
     exposedAreaMeta = new HashMap<GUID, ExposedAreaMetaData>(zone.exposedAreaMeta.size() * 4 / 3);
 
     // Copy the tokens, save a map between old and new for the initiative list.
-    if (zone.initiativeList == null) zone.initiativeList = new InitiativeList(zone);
+    if (zone.initiativeList == null) {
+      zone.initiativeList = new InitiativeList(zone);
+    }
     Object[][] saveInitiative = new Object[zone.initiativeList.getSize()][2];
     initiativeList.setZone(null);
 
@@ -385,7 +409,9 @@ public class Zone extends BaseModel {
           token.setExposedAreaGUID(guid);
           // Update the TEA on the new map, since we have the Token object available...
           ExposedAreaMetaData eamd = zone.getExposedAreaMetaData(old.getExposedAreaGUID());
-          if (eamd != null) exposeArea(eamd.getExposedAreaHistory(), token);
+          if (eamd != null) {
+            exposeArea(eamd.getExposedAreaHistory(), token);
+          }
         }
         putToken(token);
         List<Integer> list = zone.initiativeList.indexOf(old);
@@ -415,6 +441,9 @@ public class Zone extends BaseModel {
     boardPosition = (Point) zone.boardPosition.clone();
     exposedArea = (Area) zone.exposedArea.clone();
     topology = (Area) zone.topology.clone();
+    topologyTerrain = (Area) zone.topologyTerrain.clone();
+    aStarRounding = zone.aStarRounding;
+    topologyMode = zone.topologyMode;
     isVisible = zone.isVisible;
     hasFog = zone.hasFog;
   }
@@ -587,7 +616,9 @@ public class Zone extends BaseModel {
       if (toks != null && !toks.isEmpty()) {
         for (Token tok : toks) {
           ExposedAreaMetaData meta = exposedAreaMeta.get(tok.getExposedAreaGUID());
-          if (meta != null) combined.add(meta.getExposedAreaHistory());
+          if (meta != null) {
+            combined.add(meta.getExposedAreaHistory());
+          }
         }
       }
       return combined.contains(point.x, point.y);
@@ -713,9 +744,25 @@ public class Zone extends BaseModel {
    *
    * @param area the area
    */
-  public void addTopology(Area area) {
-    topology.add(area);
+  public void addTopology(Area area, TopologyMode topologyMode) {
+    switch (topologyMode) {
+      case VBL:
+        getTopology().add(area);
+        break;
+      case MBL:
+        getTopologyTerrain().add(area);
+        break;
+      case COMBINED:
+        getTopology().add(area);
+        getTopologyTerrain().add(area);
+        break;
+    }
+
     fireModelChangeEvent(new ModelChangeEvent(this, Event.TOPOLOGY_CHANGED));
+  }
+
+  public void addTopology(Area area) {
+    addTopology(area, getTopologyMode());
   }
 
   /**
@@ -723,9 +770,25 @@ public class Zone extends BaseModel {
    *
    * @param area the area
    */
-  public void removeTopology(Area area) {
-    topology.subtract(area);
+  public void removeTopology(Area area, TopologyMode topologyMode) {
+    switch (topologyMode) {
+      case VBL:
+        getTopology().subtract(area);
+        break;
+      case MBL:
+        getTopologyTerrain().subtract(area);
+        break;
+      case COMBINED:
+        getTopology().subtract(area);
+        getTopologyTerrain().subtract(area);
+        break;
+    }
+
     fireModelChangeEvent(new ModelChangeEvent(this, Event.TOPOLOGY_CHANGED));
+  }
+
+  public void removeTopology(Area area) {
+    removeTopology(area, getTopologyMode());
   }
 
   /** Fire the event TOPOLOGY_CHANGED. */
@@ -736,6 +799,11 @@ public class Zone extends BaseModel {
   /** @return the topology of the zone */
   public Area getTopology() {
     return topology;
+  }
+
+  /** @return the terrain topology of the zone */
+  public Area getTopologyTerrain() {
+    return topologyTerrain;
   }
 
   /**
@@ -807,9 +875,11 @@ public class Zone extends BaseModel {
         meta.addToExposedAreaHistory(area);
         ZoneRenderer zr = MapTool.getFrame().getZoneRenderer(this.getId());
         if (zr != null) // Could be null if the AutoSaveManager is saving the campaign by copying
-          // Zones, but not
-          // ZoneRenderers
+        // Zones, but not
+        // ZoneRenderers
+        {
           zr.getZoneView().flush();
+        }
         putToken(tok);
         fireModelChangeEvent(new ModelChangeEvent(this, Event.FOG_CHANGED));
         return; // FJE Added so that TEA isn't added to the GEA, below.
@@ -851,7 +921,9 @@ public class Zone extends BaseModel {
 
       for (GUID guid : selectedToks) {
         Token tok = getToken(guid);
-        if (tok == null) continue;
+        if (tok == null) {
+          continue;
+        }
         if ((isAllowed || tok.isOwner(playerId)) && tok.getHasSight()) {
           GUID tea = tok.getExposedAreaGUID();
           meta = exposedAreaMeta.get(tea);
@@ -864,7 +936,9 @@ public class Zone extends BaseModel {
       }
       // If 'meta' is not null, it means at least one token's TEA was modified so we need to flush
       // the ZoneView
-      if (meta != null) zoneView.flush();
+      if (meta != null) {
+        zoneView.flush();
+      }
     } else {
       // Not using IF so add the EA to the GEA instead of a TEA.
       exposedArea.add(area);
@@ -894,7 +968,9 @@ public class Zone extends BaseModel {
           continue;
         }
         ExposedAreaMetaData meta = exposedAreaMeta.get(tok.getExposedAreaGUID());
-        if (meta == null) meta = new ExposedAreaMetaData();
+        if (meta == null) {
+          meta = new ExposedAreaMetaData();
+        }
         meta.clearExposedAreaHistory();
         meta.addToExposedAreaHistory(area);
         exposedAreaMeta.put(tok.getExposedAreaGUID(), meta);
@@ -931,7 +1007,9 @@ public class Zone extends BaseModel {
           continue;
         }
         ExposedAreaMetaData meta = exposedAreaMeta.get(tok.getExposedAreaGUID());
-        if (meta == null) meta = new ExposedAreaMetaData();
+        if (meta == null) {
+          meta = new ExposedAreaMetaData();
+        }
         meta.removeExposedAreaHistory(area);
         exposedAreaMeta.put(tok.getExposedAreaGUID(), meta);
         MapTool.getFrame().getZoneRenderer(this.getId()).getZoneView().flush(tok);
@@ -977,7 +1055,9 @@ public class Zone extends BaseModel {
       // continue;
       // }
       ExposedAreaMetaData meta = exposedAreaMeta.get(tok.getExposedAreaGUID());
-      if (meta != null) combined.add(meta.getExposedAreaHistory());
+      if (meta != null) {
+        combined.add(meta.getExposedAreaHistory());
+      }
     }
     return combined;
   }
@@ -997,6 +1077,30 @@ public class Zone extends BaseModel {
 
   public void setUnitsPerCell(double unitsPerCell) {
     this.unitsPerCell = unitsPerCell;
+  }
+
+  public AStarRoundingOptions getAStarRounding() {
+    if (aStarRounding == null) {
+      aStarRounding = AStarRoundingOptions.NONE;
+    }
+
+    return aStarRounding;
+  }
+
+  public void setAStarRounding(AStarRoundingOptions aStarRounding) {
+    this.aStarRounding = aStarRounding;
+  }
+
+  public TopologyMode getTopologyMode() {
+    if (topologyMode == null) {
+      topologyMode = AppPreferences.getTopologyDrawingMode();
+    }
+
+    return topologyMode;
+  }
+
+  public void setTopologyMode(TopologyMode topologyMode) {
+    this.topologyMode = topologyMode;
   }
 
   public int getLargestZOrder() {
@@ -1189,6 +1293,7 @@ public class Zone extends BaseModel {
   ///////////////////////////////////////////////////////////////////////////
   // tokens
   ///////////////////////////////////////////////////////////////////////////
+
   /**
    * Adds the specified Token to this zone, accounting for updating the ordered list of tokens as
    * well as firing the appropriate <code>ModelChangeEvent</code> (either <code>Event.TOKEN_ADDED
@@ -1215,8 +1320,7 @@ public class Zone extends BaseModel {
 
   /**
    * Same as {@link #putToken(Token)} but optimizes map updates by accepting a list of Tokens. Note
-   * that this method fires a single <code>ModelChangeEvent</code> using <code>
-   * Event.TOKEN_ADDED
+   * that this method fires a single <code>ModelChangeEvent</code> using <code> Event.TOKEN_ADDED
    * </code> and passes the list of added tokens as a parameter. Ditto for <code>Event.TOKEN_CHANGED
    * </code>.
    *
@@ -1244,10 +1348,12 @@ public class Zone extends BaseModel {
     tokenOrderedList.addAll(tokens);
     tokenOrderedList.sort(TOKEN_Z_ORDER_COMPARATOR);
 
-    if (!addedTokens.isEmpty())
+    if (!addedTokens.isEmpty()) {
       fireModelChangeEvent(new ModelChangeEvent(this, Event.TOKEN_ADDED, addedTokens));
-    if (!changedTokens.isEmpty())
+    }
+    if (!changedTokens.isEmpty()) {
       fireModelChangeEvent(new ModelChangeEvent(this, Event.TOKEN_CHANGED, changedTokens));
+    }
   }
 
   public void removeToken(GUID id) {
@@ -1287,7 +1393,9 @@ public class Zone extends BaseModel {
   public Token resolveToken(String identifier) {
     Token token = getTokenByName(identifier);
 
-    if (token == null) token = getTokenByGMName(identifier);
+    if (token == null) {
+      token = getTokenByGMName(identifier);
+    }
 
     if (token == null) {
       try {
@@ -1333,11 +1441,15 @@ public class Zone extends BaseModel {
 
   private DrawnElement findDrawnElement(List<DrawnElement> list, GUID id) {
     for (DrawnElement de : list) {
-      if (de.getDrawable().getId() == id) return de;
+      if (de.getDrawable().getId() == id) {
+        return de;
+      }
       if (de.getDrawable() instanceof DrawablesGroup) {
         DrawnElement result =
             findDrawnElement(((DrawablesGroup) de.getDrawable()).getDrawableList(), id);
-        if (result != null) return result;
+        if (result != null) {
+          return result;
+        }
       }
     }
     return null;
@@ -1413,8 +1525,11 @@ public class Zone extends BaseModel {
         new Filter() {
           @Override
           public boolean matchToken(Token t) {
-            if (getAlwaysVisible) return !t.isStamp();
-            else return !t.isStamp() && !t.isAlwaysVisible();
+            if (getAlwaysVisible) {
+              return !t.isStamp();
+            } else {
+              return !t.isStamp() && !t.isAlwaysVisible();
+            }
           }
         });
   }
@@ -1428,8 +1543,11 @@ public class Zone extends BaseModel {
         new Filter() {
           @Override
           public boolean matchToken(Token t) {
-            if (getAlwaysVisible) return t.isGMStamp();
-            else return t.isGMStamp() && !t.isAlwaysVisible();
+            if (getAlwaysVisible) {
+              return t.isGMStamp();
+            } else {
+              return t.isGMStamp() && !t.isAlwaysVisible();
+            }
           }
         });
   }
@@ -1443,8 +1561,11 @@ public class Zone extends BaseModel {
         new Filter() {
           @Override
           public boolean matchToken(Token t) {
-            if (getAlwaysVisible) return t.isObjectStamp();
-            else return t.isObjectStamp() && !t.isAlwaysVisible();
+            if (getAlwaysVisible) {
+              return t.isObjectStamp();
+            } else {
+              return t.isObjectStamp() && !t.isAlwaysVisible();
+            }
           }
         });
   }
@@ -1458,8 +1579,11 @@ public class Zone extends BaseModel {
         new Filter() {
           @Override
           public boolean matchToken(Token t) {
-            if (getAlwaysVisible) return t.isBackgroundStamp();
-            else return t.isBackgroundStamp() && !t.isAlwaysVisible();
+            if (getAlwaysVisible) {
+              return t.isBackgroundStamp();
+            } else {
+              return t.isBackgroundStamp() && !t.isAlwaysVisible();
+            }
           }
         });
   }
@@ -1509,7 +1633,7 @@ public class Zone extends BaseModel {
         new Filter() {
           @Override
           public boolean matchToken(Token t) {
-            return t.getTerrainModifier() != 1.0f;
+            return !t.getTerrainModifierOperation().equals(TerrainModifierOperation.NONE);
           }
         });
   }
@@ -1519,10 +1643,10 @@ public class Zone extends BaseModel {
    * New buttons were added to select what type of tokens, by ownership, should be shown and driven
    * by the TokenSelection enum.
    *
-   * @author updated by Jamz
-   * @since updated 1.4.1.0
    * @param p the player
    * @return the list of tokens
+   * @author updated by Jamz
+   * @since updated 1.4.1.0
    */
   public List<Token> getOwnedTokensWithSight(Player p) {
     return getTokensFiltered(
@@ -1533,7 +1657,9 @@ public class Zone extends BaseModel {
             // AppUtil.playerOwns(t));
             // return t.getType() == Token.Type.PC && t.getHasSight() && AppUtil.playerOwns(t);
 
-            if (tokenSelection == null) tokenSelection = TokenSelection.ALL;
+            if (tokenSelection == null) {
+              tokenSelection = TokenSelection.ALL;
+            }
             // System.out.println("TokenSelection: " + tokenSelection);
             switch (tokenSelection) {
               case ALL: // Show FoW for ANY Token I own
@@ -1645,6 +1771,7 @@ public class Zone extends BaseModel {
 
   /** Interface for matchToken. */
   public static interface Filter {
+
     public boolean matchToken(Token t);
   }
 
@@ -1653,6 +1780,7 @@ public class Zone extends BaseModel {
 
   /** The class used to compare the Zorder of two tokens. */
   public static class TokenZOrderComparator implements Comparator<Token> {
+
     @Override
     public int compare(Token o1, Token o2) {
       int lval = o1.getZOrder();
@@ -1686,9 +1814,15 @@ public class Zone extends BaseModel {
          */
         int v1 = getFigureZOrder(o1);
         int v2 = getFigureZOrder(o2);
-        if ((v1 - v2) != 0) return v1 - v2;
-        if (!o1.isToken() && o2.isToken()) return -1;
-        if (!o2.isToken() && o1.isToken()) return +1;
+        if ((v1 - v2) != 0) {
+          return v1 - v2;
+        }
+        if (!o1.isToken() && o2.isToken()) {
+          return -1;
+        }
+        if (!o2.isToken() && o1.isToken()) {
+          return +1;
+        }
         if (o1.getHeight() != o2.getHeight()) {
           // Larger tokens at the same position, go behind
           return o2.getHeight() - o1.getHeight();
@@ -1867,6 +2001,11 @@ public class Zone extends BaseModel {
     // This will be true; it's just in case we decide to make it persistent in the future
     if (undo == null) {
       undo = new UndoPerZone(this);
+    }
+
+    // Movement Blocking Layer
+    if (topologyTerrain == null) {
+      topologyTerrain = new Area();
     }
     return this;
   }
